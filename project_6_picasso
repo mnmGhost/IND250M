@@ -1,0 +1,768 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import json
+import random
+from PIL import Image, ImageTk, ImageDraw
+
+
+class PicassoApp:
+    """
+    Advanced paint/sketch application using Tkinter and Pillow.
+
+    Features:
+    - Pen, pencil, brush, spray paint, eraser
+    - Shapes: line, rectangle, oval, triangle
+    - Multiple colors
+    - Pen width control
+    - Add picture
+    - Resize inserted image
+    - Erase parts of inserted images, shapes, and drawn lines
+    - Undo last 5 actions
+    - Save/load project
+    - Dark mode
+    - Resizable window
+    """
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Project 6 - Picasso Deluxe")
+        self.root.geometry("1250x800")
+        self.root.minsize(900, 650)
+
+        # App appearance
+        self.dark_mode = False
+        self.light_toolbar_bg = "#dddddd"
+        self.dark_toolbar_bg = "#2b2b2b"
+        self.light_canvas_bg = "white"
+        self.dark_canvas_bg = "#1e1e1e"
+        self.light_text = "black"
+        self.dark_text = "white"
+
+        # Drawing state
+        self.current_color = "black"
+        self.current_tool = "pen"
+        self.current_width = 3
+        self.start_x = None
+        self.start_y = None
+        self.last_x = None
+        self.last_y = None
+        self.preview_item = None
+        self.selected_image_index = None
+
+        # Undo memory
+        self.undo_stack = []
+
+        # Scene objects
+        self.objects = []
+
+        # Canvas image cache
+        self.tk_refs = []
+
+        # UI
+        self.setup_ui()
+        self.root.update_idletasks()
+
+        self.canvas_width = max(self.canvas.winfo_width(), 900)
+        self.canvas_height = max(self.canvas.winfo_height(), 650)
+
+        self.bind_canvas_events()
+        self.update_status()
+        self.redraw_canvas()
+
+    def setup_ui(self):
+        self.main_frame = tk.Frame(self.root)
+        self.main_frame.pack(fill="both", expand=True)
+
+        self.toolbar = tk.Frame(self.main_frame, bg=self.light_toolbar_bg, width=250, padx=8, pady=8)
+        self.toolbar.pack(side="left", fill="y")
+
+        self.canvas_frame = tk.Frame(self.main_frame, bg=self.light_canvas_bg)
+        self.canvas_frame.pack(side="right", fill="both", expand=True)
+
+        self.canvas = tk.Canvas(self.canvas_frame, bg=self.light_canvas_bg, cursor="cross", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
+
+        # Tool buttons
+        self.toolbar_labels = []
+        self.toolbar_buttons = []
+
+        self.add_label("Drawing Tools")
+        self.make_tool_button("Pen", "pen")
+        self.make_tool_button("Pencil", "pencil")
+        self.make_tool_button("Brush", "brush")
+        self.make_tool_button("Spray Paint", "spray")
+        self.make_tool_button("Eraser", "eraser")
+
+        self.add_label("Shapes")
+        self.make_tool_button("Line", "line")
+        self.make_tool_button("Rectangle", "rectangle")
+        self.make_tool_button("Oval", "oval")
+        self.make_tool_button("Triangle", "triangle")
+
+        self.add_label("Colors")
+        color_frame = tk.Frame(self.toolbar, bg=self.light_toolbar_bg)
+        color_frame.pack(anchor="w", pady=(0, 10))
+        self.color_frame = color_frame
+
+        self.color_buttons = {}
+        for color in ["black", "red", "green", "blue", "purple", "orange", "yellow", "brown"]:
+            btn = tk.Button(
+                color_frame,
+                bg=color,
+                width=4,
+                command=lambda c=color: self.select_color(c)
+            )
+            btn.pack(side="left", padx=2, pady=2)
+            self.color_buttons[color] = btn
+            self.toolbar_buttons.append(btn)
+
+        self.add_label("Tool Size")
+        self.width_slider = tk.Scale(
+            self.toolbar,
+            from_=1,
+            to=50,
+            orient="horizontal",
+            command=self.change_width,
+            bg=self.light_toolbar_bg,
+            fg=self.light_text,
+            highlightthickness=0
+        )
+        self.width_slider.set(self.current_width)
+        self.width_slider.pack(fill="x", pady=(0, 10))
+
+        self.add_label("Actions")
+        self.make_action_button("Undo", self.undo_last_action)
+        self.make_action_button("Clear Canvas", self.clear_canvas)
+        self.make_action_button("Save Project", self.save_project)
+        self.make_action_button("Load Project", self.load_project)
+        self.make_action_button("Add Picture", self.add_picture)
+        self.make_action_button("Resize Selected Image", self.resize_selected_image)
+        self.make_action_button("Toggle Dark Mode", self.toggle_dark_mode)
+
+        self.add_label("Current Selection")
+        self.status_color = tk.Label(self.toolbar, text="", bg="white", relief="sunken")
+        self.status_color.pack(fill="x", pady=2)
+
+        self.status_tool = tk.Label(self.toolbar, text="", bg="white", relief="sunken")
+        self.status_tool.pack(fill="x", pady=2)
+
+        self.status_width = tk.Label(self.toolbar, text="", bg="white", relief="sunken")
+        self.status_width.pack(fill="x", pady=2)
+
+        self.status_image = tk.Label(self.toolbar, text="", bg="white", relief="sunken")
+        self.status_image.pack(fill="x", pady=2)
+
+        hint = (
+            "Shortcuts:\n"
+            "Ctrl+Z = Undo\n"
+            "Ctrl+S = Save\n"
+            "Ctrl+O = Load\n"
+            "Click an image to select it"
+        )
+        self.hint_label = tk.Label(
+            self.toolbar,
+            text=hint,
+            justify="left",
+            bg=self.light_toolbar_bg,
+            fg=self.light_text
+        )
+        self.hint_label.pack(pady=(15, 0), anchor="w")
+        self.toolbar_labels.append(self.hint_label)
+
+        self.root.bind("<Control-z>", lambda event: self.undo_last_action())
+        self.root.bind("<Control-s>", lambda event: self.save_project())
+        self.root.bind("<Control-o>", lambda event: self.load_project())
+
+    def add_label(self, text):
+        label = tk.Label(self.toolbar, text=text, font=("Arial", 12, "bold"),
+                         bg=self.light_toolbar_bg, fg=self.light_text)
+        label.pack(pady=(10, 8), anchor="w")
+        self.toolbar_labels.append(label)
+
+    def make_tool_button(self, text, tool_name):
+        btn = tk.Button(self.toolbar, text=text, command=lambda: self.select_tool(tool_name))
+        btn.pack(fill="x", pady=2)
+        self.toolbar_buttons.append(btn)
+
+    def make_action_button(self, text, command):
+        btn = tk.Button(self.toolbar, text=text, command=command)
+        btn.pack(fill="x", pady=2)
+        self.toolbar_buttons.append(btn)
+
+    def bind_canvas_events(self):
+        self.canvas.bind("<ButtonPress-1>", self.on_mouse_down)
+        self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_mouse_up)
+
+    def on_canvas_resize(self, event):
+        self.canvas_width = max(event.width, 1)
+        self.canvas_height = max(event.height, 1)
+        self.redraw_canvas()
+
+    def toggle_dark_mode(self):
+        self.dark_mode = not self.dark_mode
+
+        toolbar_bg = self.dark_toolbar_bg if self.dark_mode else self.light_toolbar_bg
+        canvas_bg = self.dark_canvas_bg if self.dark_mode else self.light_canvas_bg
+        text_fg = self.dark_text if self.dark_mode else self.light_text
+
+        self.toolbar.config(bg=toolbar_bg)
+        self.canvas_frame.config(bg=canvas_bg)
+        self.canvas.config(bg=canvas_bg)
+        self.main_frame.config(bg=canvas_bg)
+
+        for label in self.toolbar_labels:
+            label.config(bg=toolbar_bg, fg=text_fg)
+
+        self.width_slider.config(bg=toolbar_bg, fg=text_fg)
+
+        self.color_frame.config(bg=toolbar_bg)
+        self.hint_label.config(bg=toolbar_bg, fg=text_fg)
+
+        self.update_status()
+        self.redraw_canvas()
+
+    def select_tool(self, tool_name):
+        self.current_tool = tool_name
+        self.update_status()
+
+    def select_color(self, color):
+        self.current_color = color
+        if self.current_tool == "eraser":
+            self.current_tool = "pen"
+        self.update_status()
+
+    def change_width(self, value):
+        self.current_width = int(value)
+        self.update_status()
+
+    def update_status(self):
+        self.status_color.config(
+            text=f"Color: {self.current_color}",
+            bg=self.current_color if self.current_color != "yellow" else "#f2e68a",
+            fg="white" if self.current_color in ["black", "red", "green", "blue", "purple", "brown"] else "black"
+        )
+        self.status_tool.config(text=f"Tool: {self.current_tool.capitalize()}")
+        self.status_width.config(text=f"Size: {self.current_width}")
+        if self.selected_image_index is None:
+            self.status_image.config(text="Selected Image: None")
+        else:
+            self.status_image.config(text=f"Selected Image: #{self.selected_image_index + 1}")
+
+    def snapshot(self):
+        return json.loads(json.dumps(self.serialize_objects()))
+
+    def push_undo_snapshot(self):
+        self.undo_stack.append(self.snapshot())
+        if len(self.undo_stack) > 5:
+            self.undo_stack.pop(0)
+
+    def undo_last_action(self):
+        if not self.undo_stack:
+            messagebox.showinfo("Undo", "Nothing to undo.")
+            return
+        snapshot = self.undo_stack.pop()
+        self.load_objects_from_serialized(snapshot)
+        self.selected_image_index = None
+        self.update_status()
+        self.redraw_canvas()
+
+    def clear_canvas(self):
+        if messagebox.askyesno("Clear Canvas", "Are you sure you want to clear the canvas?"):
+            self.push_undo_snapshot()
+            self.objects.clear()
+            self.selected_image_index = None
+            self.update_status()
+            self.redraw_canvas()
+
+    def add_picture(self):
+        file_path = filedialog.askopenfilename(
+            title="Choose an image",
+            filetypes=[
+                ("Image Files", "*.png *.jpg *.jpeg *.gif *.bmp"),
+                ("PNG Files", "*.png"),
+                ("JPEG Files", "*.jpg *.jpeg"),
+                ("GIF Files", "*.gif"),
+                ("Bitmap Files", "*.bmp"),
+                ("All Files", "*.*")
+            ]
+        )
+        if not file_path:
+            return
+
+        try:
+            image = Image.open(file_path).convert("RGBA")
+            image.thumbnail((400, 300))
+
+            self.push_undo_snapshot()
+
+            obj = {
+                "type": "image",
+                "path": file_path,
+                "x": self.canvas_width // 2,
+                "y": self.canvas_height // 2,
+                "width": image.width,
+                "height": image.height,
+                "image_data": self.pil_image_to_bytes(image)
+            }
+            self.objects.append(obj)
+            self.selected_image_index = len(self.objects) - 1
+            self.update_status()
+            self.redraw_canvas()
+        except Exception as e:
+            messagebox.showerror("Image Error", f"Could not load image:\n{e}")
+
+    def resize_selected_image(self):
+        if self.selected_image_index is None:
+            messagebox.showinfo("Resize Image", "Select an image first by clicking it.")
+            return
+
+        if not (0 <= self.selected_image_index < len(self.objects)):
+            return
+
+        obj = self.objects[self.selected_image_index]
+        if obj["type"] != "image":
+            messagebox.showinfo("Resize Image", "The selected object is not an image.")
+            return
+
+        resize_window = tk.Toplevel(self.root)
+        resize_window.title("Resize Image")
+        resize_window.geometry("300x170")
+        resize_window.resizable(False, False)
+
+        tk.Label(resize_window, text="Width:").pack(pady=(15, 5))
+        width_entry = tk.Entry(resize_window)
+        width_entry.insert(0, str(obj["width"]))
+        width_entry.pack()
+
+        tk.Label(resize_window, text="Height:").pack(pady=(10, 5))
+        height_entry = tk.Entry(resize_window)
+        height_entry.insert(0, str(obj["height"]))
+        height_entry.pack()
+
+        def apply_resize():
+            try:
+                new_width = max(1, int(width_entry.get()))
+                new_height = max(1, int(height_entry.get()))
+
+                self.push_undo_snapshot()
+
+                img = self.bytes_to_pil_image(obj["image_data"])
+                img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+                obj["width"] = new_width
+                obj["height"] = new_height
+                obj["image_data"] = self.pil_image_to_bytes(img)
+
+                resize_window.destroy()
+                self.redraw_canvas()
+            except ValueError:
+                messagebox.showerror("Resize Error", "Enter valid whole numbers for width and height.")
+
+        tk.Button(resize_window, text="Apply", command=apply_resize).pack(pady=15)
+
+    def on_mouse_down(self, event):
+        self.start_x = event.x
+        self.start_y = event.y
+        self.last_x = event.x
+        self.last_y = event.y
+
+        if self.preview_item:
+            self.canvas.delete(self.preview_item)
+            self.preview_item = None
+
+        self.select_image_at(event.x, event.y)
+
+        if self.current_tool in ["pen", "pencil", "brush", "spray", "eraser", "line", "rectangle", "oval", "triangle"]:
+            self.push_undo_snapshot()
+
+    def on_mouse_drag(self, event):
+        if self.current_tool in ["pen", "pencil", "brush"]:
+            self.draw_freehand_segment(self.last_x, self.last_y, event.x, event.y, self.current_tool)
+            self.last_x = event.x
+            self.last_y = event.y
+            self.redraw_canvas()
+
+        elif self.current_tool == "spray":
+            self.spray_paint(event.x, event.y)
+            self.last_x = event.x
+            self.last_y = event.y
+            self.redraw_canvas()
+
+        elif self.current_tool == "eraser":
+            self.erase_at(event.x, event.y)
+            self.last_x = event.x
+            self.last_y = event.y
+            self.redraw_canvas()
+
+        else:
+            self.show_shape_preview(event.x, event.y)
+
+    def on_mouse_up(self, event):
+        if self.current_tool in ["line", "rectangle", "oval", "triangle"]:
+            self.finalize_shape(event.x, event.y)
+
+        if self.preview_item:
+            self.canvas.delete(self.preview_item)
+            self.preview_item = None
+
+        self.redraw_canvas()
+
+    def draw_freehand_segment(self, x1, y1, x2, y2, tool_name):
+        if tool_name == "pen":
+            width = self.current_width
+            smooth = True
+            alpha = 255
+        elif tool_name == "pencil":
+            width = max(1, self.current_width // 2)
+            smooth = False
+            alpha = 180
+        else:  # brush
+            width = self.current_width * 2
+            smooth = True
+            alpha = 200
+
+        self.objects.append({
+            "type": "stroke",
+            "tool": tool_name,
+            "points": [x1, y1, x2, y2],
+            "color": self.current_color,
+            "width": width,
+            "smooth": smooth,
+            "alpha": alpha
+        })
+
+    def spray_paint(self, x, y):
+        radius = max(6, self.current_width * 2)
+        dots = max(10, self.current_width * 3)
+
+        for _ in range(dots):
+            dx = random.randint(-radius, radius)
+            dy = random.randint(-radius, radius)
+            if dx * dx + dy * dy <= radius * radius:
+                self.objects.append({
+                    "type": "spray_dot",
+                    "x": x + dx,
+                    "y": y + dy,
+                    "color": self.current_color,
+                    "size": max(1, self.current_width // 3 + 1)
+                })
+
+    def erase_at(self, x, y):
+        erase_radius = max(5, self.current_width * 2)
+
+        # Remove drawn objects that intersect the eraser zone
+        kept = []
+        for obj in self.objects:
+            if obj["type"] == "image":
+                if self.point_inside_image(x, y, obj):
+                    img = self.bytes_to_pil_image(obj["image_data"])
+                    draw = ImageDraw.Draw(img)
+                    draw.ellipse(
+                        [x - obj["x"] + img.width / 2 - erase_radius,
+                         y - obj["y"] + img.height / 2 - erase_radius,
+                         x - obj["x"] + img.width / 2 + erase_radius,
+                         y - obj["y"] + img.height / 2 + erase_radius],
+                        fill=(0, 0, 0, 0)
+                    )
+                    obj["image_data"] = self.pil_image_to_bytes(img)
+                    kept.append(obj)
+                else:
+                    kept.append(obj)
+
+            elif obj["type"] == "stroke":
+                if not self.stroke_near_point(obj, x, y, erase_radius):
+                    kept.append(obj)
+
+            elif obj["type"] == "spray_dot":
+                if not ((obj["x"] - x) ** 2 + (obj["y"] - y) ** 2 <= erase_radius ** 2):
+                    kept.append(obj)
+
+            elif obj["type"] in ["line", "rectangle", "oval", "triangle"]:
+                if not self.shape_near_point(obj, x, y, erase_radius):
+                    kept.append(obj)
+            else:
+                kept.append(obj)
+
+        self.objects = kept
+
+    def show_shape_preview(self, x, y):
+        if self.preview_item:
+            self.canvas.delete(self.preview_item)
+
+        if self.current_tool == "line":
+            self.preview_item = self.canvas.create_line(
+                self.start_x, self.start_y, x, y,
+                fill=self.current_color, width=self.current_width
+            )
+
+        elif self.current_tool == "rectangle":
+            self.preview_item = self.canvas.create_rectangle(
+                self.start_x, self.start_y, x, y,
+                outline=self.current_color, width=self.current_width
+            )
+
+        elif self.current_tool == "oval":
+            self.preview_item = self.canvas.create_oval(
+                self.start_x, self.start_y, x, y,
+                outline=self.current_color, width=self.current_width
+            )
+
+        elif self.current_tool == "triangle":
+            points = self.get_triangle_points(self.start_x, self.start_y, x, y)
+            self.preview_item = self.canvas.create_polygon(
+                points, outline=self.current_color, fill="", width=self.current_width
+            )
+
+    def finalize_shape(self, x, y):
+        if self.current_tool == "line":
+            self.objects.append({
+                "type": "line",
+                "x1": self.start_x, "y1": self.start_y,
+                "x2": x, "y2": y,
+                "color": self.current_color,
+                "width": self.current_width
+            })
+        elif self.current_tool == "rectangle":
+            self.objects.append({
+                "type": "rectangle",
+                "x1": self.start_x, "y1": self.start_y,
+                "x2": x, "y2": y,
+                "color": self.current_color,
+                "width": self.current_width
+            })
+        elif self.current_tool == "oval":
+            self.objects.append({
+                "type": "oval",
+                "x1": self.start_x, "y1": self.start_y,
+                "x2": x, "y2": y,
+                "color": self.current_color,
+                "width": self.current_width
+            })
+        elif self.current_tool == "triangle":
+            self.objects.append({
+                "type": "triangle",
+                "points": self.get_triangle_points(self.start_x, self.start_y, x, y),
+                "color": self.current_color,
+                "width": self.current_width
+            })
+
+    def get_triangle_points(self, x1, y1, x2, y2):
+        top_x = (x1 + x2) / 2
+        top_y = y1
+        left_x = x1
+        left_y = y2
+        right_x = x2
+        right_y = y2
+        return [top_x, top_y, left_x, left_y, right_x, right_y]
+
+    def redraw_canvas(self):
+        self.canvas.delete("all")
+        self.tk_refs = []
+
+        bg = self.dark_canvas_bg if self.dark_mode else self.light_canvas_bg
+        self.canvas.config(bg=bg)
+
+        for index, obj in enumerate(self.objects):
+            if obj["type"] == "image":
+                img = self.bytes_to_pil_image(obj["image_data"])
+                tk_img = ImageTk.PhotoImage(img)
+                self.tk_refs.append(tk_img)
+                self.canvas.create_image(obj["x"], obj["y"], image=tk_img, anchor="center")
+
+                if self.selected_image_index == index:
+                    x1 = obj["x"] - obj["width"] // 2
+                    y1 = obj["y"] - obj["height"] // 2
+                    x2 = obj["x"] + obj["width"] // 2
+                    y2 = obj["y"] + obj["height"] // 2
+                    self.canvas.create_rectangle(x1, y1, x2, y2, outline="cyan", dash=(4, 2), width=2)
+
+            elif obj["type"] == "stroke":
+                self.canvas.create_line(
+                    obj["points"],
+                    fill=obj["color"],
+                    width=obj["width"],
+                    smooth=obj["smooth"],
+                    capstyle=tk.ROUND
+                )
+
+            elif obj["type"] == "spray_dot":
+                s = obj["size"]
+                self.canvas.create_oval(
+                    obj["x"] - s, obj["y"] - s,
+                    obj["x"] + s, obj["y"] + s,
+                    fill=obj["color"], outline=obj["color"]
+                )
+
+            elif obj["type"] == "line":
+                self.canvas.create_line(
+                    obj["x1"], obj["y1"], obj["x2"], obj["y2"],
+                    fill=obj["color"], width=obj["width"]
+                )
+
+            elif obj["type"] == "rectangle":
+                self.canvas.create_rectangle(
+                    obj["x1"], obj["y1"], obj["x2"], obj["y2"],
+                    outline=obj["color"], width=obj["width"]
+                )
+
+            elif obj["type"] == "oval":
+                self.canvas.create_oval(
+                    obj["x1"], obj["y1"], obj["x2"], obj["y2"],
+                    outline=obj["color"], width=obj["width"]
+                )
+
+            elif obj["type"] == "triangle":
+                self.canvas.create_polygon(
+                    obj["points"], outline=obj["color"], fill="", width=obj["width"]
+                )
+
+    def select_image_at(self, x, y):
+        self.selected_image_index = None
+        for i in range(len(self.objects) - 1, -1, -1):
+            obj = self.objects[i]
+            if obj["type"] == "image" and self.point_inside_image(x, y, obj):
+                self.selected_image_index = i
+                break
+        self.update_status()
+
+    def point_inside_image(self, x, y, obj):
+        left = obj["x"] - obj["width"] / 2
+        right = obj["x"] + obj["width"] / 2
+        top = obj["y"] - obj["height"] / 2
+        bottom = obj["y"] + obj["height"] / 2
+        return left <= x <= right and top <= y <= bottom
+
+    def stroke_near_point(self, obj, x, y, radius):
+        pts = obj["points"]
+        for i in range(0, len(pts) - 2, 2):
+            x1, y1 = pts[i], pts[i + 1]
+            x2, y2 = pts[i + 2], pts[i + 3]
+            if self.point_to_segment_distance(x, y, x1, y1, x2, y2) <= radius + obj["width"]:
+                return True
+        return False
+
+    def shape_near_point(self, obj, x, y, radius):
+        if obj["type"] == "line":
+            return self.point_to_segment_distance(x, y, obj["x1"], obj["y1"], obj["x2"], obj["y2"]) <= radius + obj["width"]
+
+        if obj["type"] == "rectangle":
+            left = min(obj["x1"], obj["x2"]) - radius
+            right = max(obj["x1"], obj["x2"]) + radius
+            top = min(obj["y1"], obj["y2"]) - radius
+            bottom = max(obj["y1"], obj["y2"]) + radius
+            return left <= x <= right and top <= y <= bottom
+
+        if obj["type"] == "oval":
+            left = min(obj["x1"], obj["x2"]) - radius
+            right = max(obj["x1"], obj["x2"]) + radius
+            top = min(obj["y1"], obj["y2"]) - radius
+            bottom = max(obj["y1"], obj["y2"]) + radius
+            return left <= x <= right and top <= y <= bottom
+
+        if obj["type"] == "triangle":
+            pts = obj["points"]
+            for i in range(0, len(pts), 2):
+                x1, y1 = pts[i], pts[i + 1]
+                x2, y2 = pts[(i + 2) % len(pts)], pts[(i + 3) % len(pts)]
+                if self.point_to_segment_distance(x, y, x1, y1, x2, y2) <= radius + obj["width"]:
+                    return True
+            return False
+
+        return False
+
+    def point_to_segment_distance(self, px, py, x1, y1, x2, y2):
+        dx = x2 - x1
+        dy = y2 - y1
+        if dx == 0 and dy == 0:
+            return ((px - x1) ** 2 + (py - y1) ** 2) ** 0.5
+
+        t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)
+        t = max(0, min(1, t))
+        nearest_x = x1 + t * dx
+        nearest_y = y1 + t * dy
+        return ((px - nearest_x) ** 2 + (py - nearest_y) ** 2) ** 0.5
+
+    def serialize_objects(self):
+        return self.objects
+
+    def load_objects_from_serialized(self, data):
+        self.objects = data
+
+    def pil_image_to_bytes(self, image):
+        import base64
+        from io import BytesIO
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    def bytes_to_pil_image(self, data):
+        import base64
+        from io import BytesIO
+        return Image.open(BytesIO(base64.b64decode(data))).convert("RGBA")
+
+    def save_project(self):
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json")]
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "w") as file:
+                json.dump({
+                    "dark_mode": self.dark_mode,
+                    "objects": self.serialize_objects()
+                }, file, indent=4)
+            messagebox.showinfo("Save", "Project saved successfully.")
+        except Exception as e:
+            messagebox.showerror("Save Error", f"Could not save project:\n{e}")
+
+    def load_project(self):
+        file_path = filedialog.askopenfilename(
+            filetypes=[("JSON Files", "*.json")]
+        )
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, "r") as file:
+                data = json.load(file)
+
+            self.objects = data.get("objects", [])
+            self.dark_mode = data.get("dark_mode", False)
+            self.selected_image_index = None
+            self.undo_stack.clear()
+
+            # refresh dark mode visuals
+            toolbar_bg = self.dark_toolbar_bg if self.dark_mode else self.light_toolbar_bg
+            canvas_bg = self.dark_canvas_bg if self.dark_mode else self.light_canvas_bg
+            text_fg = self.dark_text if self.dark_mode else self.light_text
+            self.toolbar.config(bg=toolbar_bg)
+            self.canvas_frame.config(bg=canvas_bg)
+            self.canvas.config(bg=canvas_bg)
+            self.main_frame.config(bg=canvas_bg)
+            for label in self.toolbar_labels:
+                label.config(bg=toolbar_bg, fg=text_fg)
+            self.width_slider.config(bg=toolbar_bg, fg=text_fg)
+            self.color_frame.config(bg=toolbar_bg)
+            self.hint_label.config(bg=toolbar_bg, fg=text_fg)
+
+            self.update_status()
+            self.redraw_canvas()
+            messagebox.showinfo("Load", "Project loaded successfully.")
+        except Exception as e:
+            messagebox.showerror("Load Error", f"Could not load project:\n{e}")
+
+
+def main():
+    root = tk.Tk()
+    app = PicassoApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
